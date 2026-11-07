@@ -118,8 +118,8 @@ const pendingRunIds = new Set<string>();
 let connected = false;
 let receivingForwardedStream = false;
 const pendingMessage = props.initialSession?.parentFile ? undefined : workspaceStore.pendingAgentMessage;
-const selectedModel = ref(pendingMessage?.model ?? (props.initialSession?.providerId && props.initialSession.modelId
-  ? JSON.stringify([props.initialSession.providerId, props.initialSession.modelId]) : props.initialModel ?? ""));
+const selectedModel = ref(pendingMessage?.model || props.initialModel || (props.initialSession?.providerId && props.initialSession.modelId
+  ? JSON.stringify([props.initialSession.providerId, props.initialSession.modelId]) : ""));
 const reasoningEffort = ref(pendingMessage?.reasoningEffort ?? props.initialSession?.thinkingLevel ?? "");
 const selectedModelChoice = useNodeModelSelection(modelChoices, selectedModel);
 const contextWindow = computed(() => contextUsage.value?.contextWindow ?? selectedModelChoice.value?.contextWindow ?? 262144);
@@ -204,7 +204,7 @@ function receiveEvent(event: AgentEvent) {
   }
 }
 
-defineExpose({ receiveEvent, beginProjectStop, getRunId: () => runId, getSelectedModel: () => selectedModel.value });
+defineExpose({ receiveEvent, beginProjectStop, getRunId: () => runId, getSelectedModel: () => selectedModel.value, getReasoningEffort: () => reasoningEffort.value });
 
 function submitMessage(mode?: "steer" | "followUp") {
   if (busy.value || remoteRunning.value) return sendQueuedMessage(mode ?? "followUp");

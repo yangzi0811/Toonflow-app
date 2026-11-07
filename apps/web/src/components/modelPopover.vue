@@ -10,7 +10,7 @@
       popperClass="agentModelPopover"
       :popperStyle="{ padding: '20px', maxWidth: 'calc(100vw - 24px)' }">
       <template #reference>
-        <el-button class="modelButton" text :disabled="disabled" aria-label="模型与思考强度设置">
+        <el-button class="modelButton" text :disabled="disabled" aria-label="模型与思考强度设置" :data-agent-model="active && selectedModel ? selectedModel : undefined">
           <modelIcon v-if="selectedModelChoice" :model="selectedModelChoice.modelId" :size="14" />
           <modelLabel class="modelName" :label="selectedModelChoice?.label ?? '选择模型'" :providerId="selectedModelChoice?.providerId" />
           <template v-if="reasoningLevels.length">
@@ -81,7 +81,10 @@ const reasoningOptions = computed(() => [{ label: "默认", value: "" }, ...reas
 const reasoningColumns = computed(() => Math.min(4, reasoningOptions.value.length > 4 ? Math.ceil(reasoningOptions.value.length / 2) : reasoningOptions.value.length));
 const reasoningLabel = computed(() => reasoningOptions.value.find(item => item.value === reasoningEffort.value)?.label ?? "默认");
 watch(modelChoices, items => {
-  if (!selectedModel.value) selectedModel.value = items[0]?.value ?? "";
+  // 未指定模型时不用目录第一项；第一项常为 ChatTTS，新对话会丢掉当前的 [providerId, modelId]。
+  if (selectedModel.value) return;
+  const preferred = items.find(item => item.providerId === "vApi" && item.modelId === "claude-sonnet-5-5");
+  selectedModel.value = preferred?.value ?? items[0]?.value ?? "";
 }, { immediate: true });
 watch([() => selectedModelChoice.value?.reasoningLevels, reasoningEffort], ([levels, effort]) => {
   if (levels && effort && !levels.includes(effort as ThinkingLevel)) reasoningEffort.value = "";
