@@ -41,6 +41,7 @@ import { computed, onBeforeUnmount, ref, watch, type ComponentPublicInstance } f
 import axios from "axios";
 import { translate } from "@toonflow/i18n/vue";
 import { ElMessage } from "element-plus";
+import { thinkingLevels, type ThinkingLevel } from "@toonflow/server/modelReasoning";
 import { useWorkspaceStore } from "@/stores/workspace";
 import useWorkspaceFiles from "@/lib/workspaceFiles";
 import { stopAgent } from "@/lib/agentControl";
@@ -73,14 +74,22 @@ let nextConversationKey = 0;
 const conversationRefs = new Map<number, InstanceType<typeof conversation>>();
 const pendingEvents = new Map<number, AgentEvent[]>();
 
-function showConversation(session: AgentConversation | null, activate = true) {
+function readModelPair(value?: string): [string, string] | undefined {
+  if (!value) return;
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed) && parsed.length === 2 && parsed.every(item => typeof item === "string" && item)) return [parsed[0], parsed[1]];
+  } catch { /* 选择框里不是 [providerId, modelId]。 */ }
+}
+
+function showConversation(session: AgentConversation | null, activate = true, initialModel?: string) {
   const existing = session && conversations.value.find(item => item.file === session.file);
   if (existing) {
     if (activate) conversationKey.value = existing.key;
     return existing;
   }
   const key = ++nextConversationKey;
-  const item = { key, name: session?.name || "新对话", file: session?.file, parentFile: session?.parentFile, runId: session?.runId, retiredRunIds: new Set<string>(), subAgents: session?.subAgents ?? [], session };
+  const item = { key, name: session?.name || "新对话", file: session?.file, parentFile: session?.parentFile, runId: session?.runId, retiredRunIds: new Set<string>(), subAgents: session?.subAgents ?? [], session, initialModel };
   conversations.value.push(item);
   if (activate) conversationKey.value = key;
   return conversations.value[conversations.value.length - 1]!;
@@ -188,7 +197,12 @@ async function newConversation(source?: { file?: string; message: AgentMessage }
   const directory = workspaceStore.project?.directory;
   if (!directory) return ElMessage.warning("请先打开项目");
   if (source && (!source.file || !(source.message.entryId || source.message.replyTo))) return ElMessage.warning("消息尚未保存，请稍后创建分支");
-  const initialModel = conversationRefs.get(conversationKey.value)?.getSelectedModel();
+  const view = conversationRefs.get(conversationKey.value);
+  // 选择值是 [providerId, modelId]，不能只写模型名。目录为空时也不要落到第一项 ChatTTS。
+  const selectedPair = readModelPair(view?.getSelectedModel());
+  const [providerId, modelId] = selectedPair ?? ["vApi", "claude-sonnet-5-5"];
+  const thinkingLevel = thinkingLevels.find((level): level is ThinkingLevel => level === view?.getReasoningEffort());
+  const initialModel = JSON.stringify([providerId, modelId]);
   const currentRequest = ++requestId;
   const errorMessage = source ? "创建对话分支失败" : "新建对话失败";
   branchingId.value = source?.message.id;
@@ -196,13 +210,14 @@ async function newConversation(source?: { file?: string; message: AgentMessage }
   try {
     const { data } = await axios.post<{ code: number; data: AgentConversation; message?: string }>(source ? "/api/agent/branch" : "/api/agent/create", {
       directory,
-      ...(source ? { sessionFile: source.file, ...(source.message.entryId ? { entryId: source.message.entryId } : { replyTo: source.message.replyTo }) } : {}),
+      ...(source ? { sessionFile: source.file, ...(source.message.entryId ? { entryId: source.message.entryId } : { replyTo: source.message.replyTo }) }
+        : { providerId, modelId, ...(thinkingLevel ? { thinkingLevel } : {}) }),
     }, { headers: { "x-toonflow-workspace": "1" } });
     if (data.code !== 200) throw new Error(data.message || errorMessage);
     if (currentRequest !== requestId) return;
     const session = data.data;
     history.value.unshift({ file: session.file, name: session.name, modified: new Date().toISOString(), messageCount: session.messages.length });
-    showConversation(session).initialModel = initialModel;
+    showConversation(session, true, source ? undefined : initialModel);
     initialized.value = true;
   } catch (error) {
     if (currentRequest === requestId) ElMessage.error(axios.isAxiosError(error)

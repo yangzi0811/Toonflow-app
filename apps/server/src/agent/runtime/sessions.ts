@@ -10,7 +10,7 @@ import conf from "@/utils/conf";
 import { providerSchema, getModelLimits, getConfiguredProviders } from "@/utils/ai";
 import { lockWorkspaceFiles, resolveWorkspacePath, writeWorkspaceFile } from "@/utils/workspace/files";
 import { getReadableFileMimeType } from "@/lib/documentFormats";
-import { thinkingLevels } from "@/lib/modelReasoning";
+import { thinkingLevels, type ThinkingLevel } from "@/lib/modelReasoning";
 import { translateMessage } from "@/lib/i18n";
 
 export const agentAttachmentsSchema = z
@@ -398,17 +398,20 @@ export async function branchAgentConversation(cwd: string, path: string, options
   }
 }
 
-export async function createAgentConversation(cwd: string, child?: Omit<AgentSubAgent, "file" | "status">) {
+export async function createAgentConversation(cwd: string, child?: Omit<AgentSubAgent, "file" | "status">, model?: { providerId: string; modelId: string; thinkingLevel?: ThinkingLevel }) {
   const { path: directory } = await resolveWorkspacePath(cwd, ".agent/sessions", true);
   const history = SessionManager.create(cwd, directory, child ? { parentSession: child.parentFile } : undefined);
   const path = history.getSessionFile()!;
-  history.appendCustomEntry("toonflowReasoning", { thinkingLevel: child?.thinkingLevel ?? null });
+  const providerId = child?.providerId || model?.providerId;
+  const modelId = child?.modelId || model?.modelId;
+  const thinkingLevel = child?.thinkingLevel ?? model?.thinkingLevel;
+  history.appendCustomEntry("toonflowReasoning", { thinkingLevel: thinkingLevel ?? null });
   if (child) {
     history.appendSessionInfo(child.name);
     history.appendCustomEntry("toonflowSubAgentInfo", { ...child, file: basename(path), status: "running" });
-    if (child.providerId && child.modelId) history.appendModelChange(child.providerId, child.modelId);
-    if (child.thinkingLevel) history.appendThinkingLevelChange(child.thinkingLevel);
   }
+  if (providerId && modelId) history.appendModelChange(providerId, modelId);
+  if (thinkingLevel) history.appendThinkingLevelChange(thinkingLevel);
   // ACT: SDK 默认等首条回复才落盘；先保存会话头，让空对话也能被历史列表读取。
   await writeWorkspaceFile(path, [history.getHeader(), ...history.getEntries()].map(entry => JSON.stringify(entry)).join("\n") + "\n", true);
   return getAgentSession(cwd, path);
@@ -657,6 +660,34 @@ export function getAgentStats(history: SessionManager, timing?: { outputTokens: 
   }
   tokens.total = tokens.input + tokens.output + tokens.cacheRead + tokens.cacheWrite;
   return { tokens, tokensPerSecond: decodeMs > 0 ? (outputTokens * 1000) / decodeMs : undefined };
+}
+
+export function omitOversizedSessionContext(history: SessionManager, maxRequestBytes: number) {
+  // ACT: 供应商按完整上下文拒绝超过 32MB 的请求。只追加检查点，jsonl 里的旧记录仍保留。
+  const budget = Math.max(256 * 1024, maxRequestBytes - 8 * 1024 * 1024);
+  const branch = history.getBranch();
+  const messageBytes = (entry: (typeof branch)[number]) => entry.type === "message" ? Buffer.byteLength(JSON.stringify(entry.message), "utf8") : 0;
+  const contextBytes = Buffer.byteLength(JSON.stringify(history.buildSessionContext().messages), "utf8");
+  if (contextBytes <= budget) return false;
+  let bytes = 0;
+  let cut = -1;
+  for (let index = branch.length - 1; index >= 0; index--) {
+    const entry = branch[index]!;
+    bytes += messageBytes(entry);
+    if (entry.type === "message" && entry.message.role === "user") {
+      if (cut >= 0 && bytes > budget) break;
+      cut = index;
+    }
+    if (bytes > budget) break;
+  }
+  const first = cut > 0 ? branch[cut] : undefined;
+  if (first?.type !== "message" || !branch.slice(0, cut).some(entry => entry.type === "message")) return false;
+  history.appendCompaction(
+    "更早的对话已从模型上下文中省略，因为完整历史会使请求超过供应商的请求体限制。请以保留的最近消息为准。",
+    first.id,
+    Math.ceil(contextBytes / 4),
+  );
+  return true;
 }
 
 export function getAgentContext(history: SessionManager, contextWindow = 0) {

@@ -22,7 +22,7 @@ import { createReportTool } from "@/agent/tools/report";
 import { agentMessageContent, createAgentTeamTools } from "@/agent/tools/agentTeam";
 import { runDelegatedAgent } from "@/agent/runtime/delegation";
 import {
-  agentAttachmentsSchema, getActiveAgentSession, getAgentContext, getAgentQueue, getAgentStats, getAgentUserMessage, getParentSessionFile, getSubAgentInfo,
+  agentAttachmentsSchema, getActiveAgentSession, getAgentContext, getAgentQueue, getAgentStats, getAgentUserMessage, getParentSessionFile, getSubAgentInfo, omitOversizedSessionContext,
   getQueuedMessageId, getToolResultText, hasPendingAgentQuestion, registerAgentRun, registerAgentSession, updateSubAgent,
   type ActiveAgentSession,
 } from "@/agent/runtime/sessions";
@@ -215,6 +215,7 @@ export async function run(
     const snapshots = await snapshotMentions(cwd, mentions, originalMessage?.mentions ?? [], signal);
     mentionFiles = snapshots.created;
     mentions = agentMentionsSchema.parse(snapshots.mentions);
+    if (!resendFrom) omitOversizedSessionContext(history, provider.maxRequestBytes ?? 32 * 1024 * 1024);
     const previous = history.buildSessionContext();
     if (previous.model && (previous.model.provider !== providerId || previous.model.modelId !== modelId))
       history.appendModelChange(providerId, modelId);
